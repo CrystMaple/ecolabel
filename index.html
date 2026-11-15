@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>通用土地生态经济网格标注工具</title>
+  <link rel="stylesheet" href="/css/main.css" />
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    🛰️ 通用土地生态经济网格标注器
+    <span id="headerMetaInfo">17×8 网格 · 5期 · 自动适配分辨率</span>
+  </div>
+  <div class="toolbar-group">
+    <label class="file-label">
+      📂 批量导入历史图像
+      <input type="file" id="imageInput" accept="image/*" multiple />
+    </label>
+    <button onclick="copyFromPrev()" title="将上一期已标注结果复制到当前图">📋 复制上一期</button>
+    <button onclick="clearCurrentGrid()" class="danger">🗑️ 清空当前图</button>
+    <label class="file-label">
+      📥 导入JSON进度
+      <input type="file" id="jsonImportInput" accept=".json" />
+    </label>
+    <button onclick="exportJSON()" class="primary">💾 导出 JSON</button>
+    <button onclick="exportCSV()" class="success">📊 导出 CSV</button>
+  </div>
+</header>
+
+<main>
+  <!-- 左侧：网格与时间序列自定义 + 画笔 + 视图 -->
+  <aside class="left">
+    <div>
+      <div class="section-title">自定义空间与时间维度</div>
+      <div class="config-box">
+        <div class="control-inline">
+          <span>横向网格数 (列 1–60)</span>
+          <input type="number" id="colsInput" class="num-input" value="17" min="1" max="60" />
+        </div>
+        <div class="control-inline">
+          <span>纵向网格数 (行 1–60)</span>
+          <input type="number" id="rowsInput" class="num-input" value="8" min="1" max="60" />
+        </div>
+        <div class="control-inline">
+          <span>时间序列个数 (期 1–24)</span>
+          <input type="number" id="periodsInput" class="num-input" value="5" min="1" max="24" />
+        </div>
+        <button onclick="applyDimensions()" class="primary full-btn">⚙️ 应用维度设置</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-title">研究区核算参数</div>
+      <div class="config-box">
+        <div class="control-inline">
+          <span>全图总面积 (公顷)</span>
+          <input type="number" id="totalAreaInput" class="num-input" value="249.1" min="0.1" step="0.1" />
+        </div>
+        <div class="control-inline">
+          <span>标准当量 Ea (元/ha·yr)</span>
+          <input type="number" id="eaInput" class="num-input" value="2500" min="1" step="10" />
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-title">地类画笔（按住左键连续刷涂）</div>
+      <div class="brush-list" id="brushList"></div>
+    </div>
+
+    <div>
+      <div class="section-title">视图显示设置</div>
+      <div class="config-box">
+        <div class="control-row">
+          <div class="control-inline">
+            <span>色块透明度</span>
+            <span id="opacityVal">45%</span>
+          </div>
+          <input type="range" id="opacitySlider" min="0" max="85" value="45" />
+        </div>
+        <label class="control-inline" style="cursor:pointer; font-size:12px; color:var(--muted);">
+          <span>显示网格编号</span>
+          <input type="checkbox" id="toggleLabels" checked />
+        </label>
+        <label class="control-inline" style="cursor:pointer; font-size:12px; color:var(--muted);">
+          <span>显示辅助网格线</span>
+          <input type="checkbox" id="toggleGridlines" checked />
+        </label>
+      </div>
+    </div>
+
+    <div class="tip-box">
+      <strong>快捷操作：</strong><br>
+      • <b>左键点击/拖拽</b>：批量刷涂<br>
+      • <b>右键点击/拖拽</b>：快速擦除<br>
+      • <b>数字键 1–6 / 0</b>：切换画笔/橡皮<br>
+      • <b>键盘 ← / →</b>：切换时间序列
+    </div>
+  </aside>
+
+  <!-- 中间：时期标签 + 动态自适应画布 -->
+  <section class="canvas-area">
+    <div class="canvas-topbar">
+      <div class="tabs" id="periodTabs"></div>
+      <div class="period-rename">
+        <span>当前时期名称：</span>
+        <input type="text" id="periodLabelInput" class="text-input" placeholder="如：2013年" />
+      </div>
+    </div>
+
+    <div class="stage-container" id="stageContainer">
+      <div class="stage-wrapper" id="stageWrapper">
+        <div class="empty-hint" id="emptyHint">
+          请点击左上角 <b>「📂 批量导入历史图像」</b> 导入对应期数的卫星图<br>
+          （若导入图片数量多于当前时间序列数，将自动为你扩展期数；画布会自动适配任意分辨率比例）
+        </div>
+        <img id="satImg" alt="卫星底图" style="display:none;" />
+        <div class="grid-overlay" id="gridOverlay" style="display:none;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右侧：实时统计 -->
+  <aside class="right">
+    <div class="stat-card">
+      <div class="section-title" style="margin-bottom:4px;">当前图像标注进度</div>
+      <div class="control-inline">
+        <span id="progressText">0 / 136 格 (0%)</span>
+        <span id="currentCellInfo" style="color:var(--accent); font-family:monospace;">--</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill" style="width:0%"></div>
+      </div>
+      <div id="imgResolutionInfo" style="margin-top:6px; font-size:11px; color:var(--muted);">
+        单格面积：-- 公顷 | 分辨率：未导入
+      </div>
+    </div>
+
+    <div class="stat-card">
+      <div class="section-title" id="statsCardTitle">地类占比统计 (共136格)</div>
+      <div id="statsTable"></div>
+    </div>
+
+    <div class="stat-card">
+      <div class="section-title">当前时期估算 ESV</div>
+      <div style="font-size:11px; color:var(--muted);">基于谢高地修正当量因子估算</div>
+      <div class="esv-big" id="esvTotalDisplay">0.00 万元/年</div>
+    </div>
+
+    <div class="stat-card">
+      <div class="section-title">全时间序列完成度总览</div>
+      <div id="allPeriodsOverview"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+  const STORAGE_KEY = "land_eco_annotator_universal_v2";
+
+  const CLASSES = [
+    { id: 1, name: "耕地/农田", color: "234, 179, 8", hex: "#eab308", eq: 3.90 },
+    { id: 2, name: "林地/公园密林", color: "21, 128, 61", hex: "#15803d", eq: 19.60 },
+    { id: 3, name: "城市草坪/稀疏绿地", color: "74, 222, 128", hex: "#4ade80", eq: 11.40 },
+    { id: 4, name: "水域/湿地", color: "2, 132, 199", hex: "#0284c7", eq: 45.90 },
+    { id: 5, name: "建设用地(硬化)", color: "239, 68, 68", hex: "#ef4444", eq: 0.00 },
+    { id: 6, name: "施工裸地/防尘网", color: "217, 119, 6", hex: "#d97706", eq: -0.20 },
+    { id: 0, name: "橡皮擦 (清除)", color: "100, 116, 139", hex: "#64748b", eq: 0 }
+  ];
+
+  let state = {
+    cols: 17,
+    rows: 8,
+    periodCount: 5,
+    activeBrush: 1,
+    activePeriod: 0,
+    opacity: 0.45,
+    totalAreaHa: 249.1,
+    eaValue: 2500,
+    periods: []
+  };
+
+  let isDrawing = false;
+  let drawMode = 1;
+
+  function totalCells() {
+    return state.cols * state.rows;
+  }
+
+  // 生成类似 Excel 的列编号 (A..Z, AA..BH)
+  function getColLabel(index) {
+    let label = "";
+    let n = index;
+    while (n >= 0) {
+      label = String.fromCharCode((n % 26) + 65) + label;
+      n = Math.floor(n / 26) - 1;
+    }
+    return label;
+  }
+
+  function createEmptyPeriod(idx) {
+    return {
+      label: `时期 T${idx + 1}`,
+      fileName: "",
+      imgUrl: "",
+      width: 0,
+      height: 0,
+      grid: new Array(totalCells()).fill(0)
+    };
+  }
+
+  function initDefaultPeriods() {
+    state.periods = Array.from({ length: state.periodCount }, (_, i) => createEmptyPeriod(i));
+  }
+
+  // 读取本地缓存
+  function loadSavedProgress() {
+    initDefaultPeriods();
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+      if (parsed.cols >= 1 && parsed.rows >= 1) {
+        state.cols = parsed.cols;
+        state.rows = parsed.rows;
+      }
+      if (parsed.periodCount >= 1) {
+        state.periodCount = parsed.periodCount;
+      }
+      if (parsed.totalAreaHa) state.totalAreaHa = parsed.totalAreaHa;
+      if (parsed.eaValue) state.eaValue = parsed.eaValue;
+
+      initDefaultPeriods();
+      if (Array.isArray(parsed.periods)) {
+        parsed.periods.slice(0, state.periodCount).forEach((p, idx) => {
+          state.periods[idx].label = p.label || state.periods[idx].label;
+          state.periods[idx].fileName = p.fileName || "";
+          if (Array.isArray(p.grid) && p.grid.length === totalCells()) {
+            state.periods[idx].grid = p.grid;
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("恢复缓存失败", e);
+    }
+  }
+
+  function syncInputsFromState() {
+    document.getElementById("colsInput").value = state.cols;
+    document.getElementById("rowsInput").value = state.rows;
+    document.getElementById("periodsInput").value = state.periodCount;
+    document.getElementById("totalAreaInput").value = state.totalAreaHa;
+    document.getElementById("eaInput").value = state.eaValue;
+    document.getElementById("headerMetaInfo").textContent =
+      `${state.cols}×${state.rows} 网格 · ${state.periodCount}期 · 自动适配分辨率`;
+  }
+
+  function saveProgress() {
+    try {
+      const toSave = {
+        cols: state.cols,
+        rows: state.rows,
+        periodCount: state.periodCount,
+        totalAreaHa: state.totalAreaHa,
+        eaValue: state.eaValue,
+        periods: state.periods.map(p => ({
+          label: p.label,
+          fileName: p.fileName,
+          grid: p.grid
+        }))
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    } catch (e) {
+      console.warn("保存缓存失败", e);
+    }
+  }
+
+  // 应用自定义网格与时间序列维度
+  function applyDimensions() {
+    const newCols = Math.min(60, Math.max(1, parseInt(document.getElementById("colsInput").value, 10) || 17));
+    const newRows = Math.min(60, Math.max(1, parseInt(document.getElementById("rowsInput").value, 10) || 8));
+    const newCount = Math.min(24, Math.max(1, parseInt(document.getElementById("periodsInput").value, 10) || 5));
+
+    const gridChanged = newCols !== state.cols || newRows !== state.rows;
+    const countShrank = newCount < state.periodCount;
+
+    if (gridChanged) {
+      const hasAnyLabel = state.periods.some(p => p.grid.some(v => v !== 0));
+      if (hasAnyLabel && !confirm(`修改网格尺寸 (${state.cols}×${state.rows} → ${newCols}×${newRows}) 将重置已有网格标注，确定继续吗？`)) {
+        syncInputsFromState();
+        return;
+      }
+      state.cols = newCols;
+      state.rows = newRows;
+      state.periods.forEach(p => {
+        p.grid = new Array(newCols * newRows).fill(0);
+      });
+    }
+
+    if (countShrank) {
+      const discardedHasData = state.periods.slice(newCount).some(p => p.grid.some(v => v !== 0));
+      if (discardedHasData && !confirm(`减少时间序列 (${state.periodCount} → ${newCount}) 将移除多余期数的标注，确定继续吗？`)) {
+        syncInputsFromState();
+        return;
+      }
+      state.periods = state.periods.slice(0, newCount);
+    } else if (newCount > state.periodCount) {
+      for (let i = state.periodCount; i < newCount; i++) {
+        state.periods.push(createEmptyPeriod(i));
+      }
+    }
+
+    state.periodCount = newCount;
+    if (state.activePeriod >= state.periodCount) {
+      state.activePeriod = state.periodCount - 1;
+    }
+
+    syncInputsFromState();
+    buildGridDOM();
+    switchPeriod(state.activePeriod);
+    saveProgress();
+  }
+
+  // 自动计算画布最佳显示尺寸，兼容任何长宽比图像
+  function fitStageSize() {
+    const container = document.getElementById("stageContainer");
+    const wrapper = document.getElementById("stageWrapper");
+    const p = state.periods[state.activePeriod];
+
+    const availW = Math.max(200, container.clientWidth - 16);
+    const availH = Math.max(200, container.clientHeight - 16);
+
+    const natW = p && p.width ? p.width : 1955;
+    const natH = p && p.height ? p.height : 1200;
+
+    const scale = Math.min(availW / natW, availH / natH);
+    wrapper.style.width = `${Math.floor(natW * scale)}px`;
+    wrapper.style.height = `${Math.floor(natH * scale)}px`;
+  }
+
+  function renderBrushes() {
+    const container = document.getElementById("brushList");
+    container.innerHTML = "";
+    CLASSES.forEach(cls => {
+      const div = document.createElement("div");
+      div.className = `brush-item ${state.activeBrush === cls.id ? "active" : ""}`;
+      div.innerHTML = `
+        <span class="swatch" style="background:${cls.hex}"></span>
+        <span>${cls.name}</span>
+        <span class="kbd">${cls.id}</span>
+      `;
+      div.onclick = () => {
+        state.activeBrush = cls.id;
+        renderBrushes();
+      };
+      container.appendChild(div);
+    });
+  }
+
+  function renderTabs() {
+    const container = document.getElementById("periodTabs");
+    container.innerHTML = "";
+    state.periods.forEach((p, idx) => {
+      const btn = document.createElement("button");
+      btn.className = `tab-btn ${state.activePeriod === idx ? "active" : ""}`;
+      const nameTag = p.fileName ? ` (${p.fileName.replace(/\.[^.]+$/, "")})` : "";
+      btn.textContent = `${p.label}${nameTag}`;
+      btn.onclick = () => switchPeriod(idx);
+      container.appendChild(btn);
+    });
+  }
+
+  // 动态构建 M × N 网格 DOM
+  function buildGridDOM() {
+    const overlay = document.getElementById("gridOverlay");
+    overlay.innerHTML = "";
+    overlay.style.gridTemplateColumns = `repeat(${state.cols}, 1fr)`;
+    overlay.style.gridTemplateRows = `repeat(${state.rows}, 1fr)`;
+
+    for (let r = 0; r < state.rows; r++) {
+      for (let c = 0; c < state.cols; c++) {
+        const idx = r * state.cols + c;
+        const cellId = `${getColLabel(c)}${r + 1}`;
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.dataset.index = idx;
+        cell.innerHTML = `<span>${cellId}</span>`;
+
+        cell.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          isDrawing = true;
+          drawMode = e.button === 2 ? 0 : state.activeBrush;
+          paintCell(idx, drawMode);
+        });
+        cell.addEventListener("mouseenter", () => {
+          document.getElementById("currentCellInfo").textContent = cellId;
+          if (isDrawing) paintCell(idx, drawMode);
+        });
+        overlay.appendChild(cell);
+      }
+    }
+  }
+
+  function paintCell(idx, classId) {
+    const p = state.periods[state.activePeriod];
+    if (p.grid[idx] === classId) return;
+    p.grid[idx] = classId;
+    updateCellVisual(idx, classId);
+    updateStats();
+    saveProgress();
+  }
+
+  function updateCellVisual(idx, classId) {
+    const cell = document.getElementById("gridOverlay").children[idx];
+    if (!cell) return;
+    const cls = CLASSES.find(c => c.id === classId);
+    cell.style.backgroundColor = !cls || classId === 0
+      ? "transparent"
+      : `rgba(${cls.color}, ${state.opacity})`;
+  }
+
+  function refreshAllCellsVisual() {
+    const grid = state.periods[state.activePeriod].grid;
+    const count = totalCells();
+    for (let i = 0; i < count; i++) {
+      updateCellVisual(i, grid[i]);
+    }
+  }
+
+  function switchPeriod(idx) {
+    state.activePeriod = idx;
+    const p = state.periods[idx];
+    const img = document.getElementById("satImg");
+    const overlay = document.getElementById("gridOverlay");
+    const hint = document.getElementById("emptyHint");
+
+    document.getElementById("periodLabelInput").value = p.label;
+
+    if (p.imgUrl) {
+      img.onload = () => {
+        p.width = img.naturalWidth;
+        p.height = img.naturalHeight;
+        fitStageSize();
+        updateStats();
+      };
+      img.src = p.imgUrl;
+      img.style.display = "block";
+      overlay.style.display = "grid";
+      hint.style.display = "none";
+    } else {
+      img.style.display = "none";
+      overlay.style.display = "none";
+      hint.style.display = "block";
+      fitStageSize();
+    }
+    renderTabs();
+    refreshAllCellsVisual();
+    updateStats();
+  }
+
+  function updateStats() {
+    const total = totalCells();
+    const p = state.periods[state.activePeriod];
+    const grid = p.grid;
+    const counts = {};
+    CLASSES.forEach(c => counts[c.id] = 0);
+    grid.forEach(val => { counts[val] = (counts[val] || 0) + 1; });
+
+    const labeled = total - (counts[0] || 0);
+    const pctDone = ((labeled / total) * 100).toFixed(0);
+    document.getElementById("progressText").textContent = `${labeled} / ${total} 格 (${pctDone}%)`;
+    document.getElementById("progressFill").style.width = `${pctDone}%`;
+    document.getElementById("statsCardTitle").textContent = `地类占比统计 (共${total}格)`;
+
+    const haPerCell = state.totalAreaHa / total;
+    const resStr = p.width && p.height ? `${p.width}×${p.height}` : "未导入";
+    document.getElementById("imgResolutionInfo").textContent =
+      `单格面积：${haPerCell.toFixed(3)} 公顷 | 分辨率：${resStr}`;
+
+    let totalEsvYuan = 0;
+    const tableEl = document.getElementById("statsTable");
+    tableEl.innerHTML = "";
+    CLASSES.filter(c => c.id !== 0).forEach(cls => {
+      const cnt = counts[cls.id] || 0;
+      const pct = ((cnt / total) * 100).toFixed(1);
+      totalEsvYuan += cnt * haPerCell * cls.eq * state.eaValue;
+      const row = document.createElement("div");
+      row.className = "stat-row";
+      row.innerHTML = `
+        <span style="display:flex; align-items:center; gap:6px;">
+          <span class="swatch" style="width:10px; height:10px; background:${cls.hex}"></span>
+          ${cls.name}
+        </span>
+        <span><b>${cnt}</b> 格 (${pct}%)</span>
+      `;
+      tableEl.appendChild(row);
+    });
+
+    document.getElementById("esvTotalDisplay").textContent =
+      `${(totalEsvYuan / 10000).toFixed(2)} 万元/年`;
+
+    const overviewEl = document.getElementById("allPeriodsOverview");
+    overviewEl.innerHTML = "";
+    state.periods.forEach((item, idx) => {
+      const done = item.grid.filter(v => v !== 0).length;
+      const div = document.createElement("div");
+      div.className = "stat-row";
+      div.style.cursor = "pointer";
+      div.onclick = () => switchPeriod(idx);
+      div.innerHTML = `
+        <span style="color:${idx === state.activePeriod ? "var(--accent)" : "var(--text)"}">
+          ${item.label} ${item.fileName ? "✓" : ""}
+        </span>
+        <span>${done} / ${total}</span>
+      `;
+      overviewEl.appendChild(div);
+    });
+  }
+
+  function copyFromPrev() {
+    if (state.activePeriod === 0) {
+      alert("当前已是第 1 期，没有上一期可复制！");
+      return;
+    }
+    state.periods[state.activePeriod].grid = [...state.periods[state.activePeriod - 1].grid];
+    refreshAllCellsVisual();
+    updateStats();
+    saveProgress();
+  }
+
+  function clearCurrentGrid() {
+    if (!confirm(`确定要清空「${state.periods[state.activePeriod].label}」的所有网格标注吗？`)) return;
+    state.periods[state.activePeriod].grid = new Array(totalCells()).fill(0);
+    refreshAllCellsVisual();
+    updateStats();
+    saveProgress();
+  }
+
+  // 批量导入图像（如超出当前期数则自动扩展）
+  document.getElementById("imageInput").addEventListener("change", (e) => {
+    const files = Array.from(e.target.files).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true })
+    );
+    if (files.length === 0) return;
+
+    if (files.length > state.periodCount && files.length <= 24) {
+      for (let i = state.periodCount; i < files.length; i++) {
+        state.periods.push(createEmptyPeriod(i));
+      }
+      state.periodCount = files.length;
+      syncInputsFromState();
+    }
+
+    files.slice(0, state.periodCount).forEach((file, idx) => {
+      state.periods[idx].fileName = file.name;
+      state.periods[idx].imgUrl = URL.createObjectURL(file);
+    });
+    saveProgress();
+    switchPeriod(0);
+  });
+
+  // 导入 JSON（兼容旧版 17x8 与任意自定义尺寸）
+  document.getElementById("jsonImportInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.meta && data.meta.gridDimension) {
+          const [c, r] = data.meta.gridDimension.split("x").map(Number);
+          if (c >= 1 && r >= 1) {
+            state.cols = c;
+            state.rows = r;
+          }
+        }
+        if (data.config) {
+          state.totalAreaHa = data.config.totalAreaHa || state.totalAreaHa;
+          state.eaValue = data.config.eaValue || state.eaValue;
+        }
+        if (Array.isArray(data.periods) && data.periods.length > 0) {
+          state.periodCount = data.periods.length;
+          initDefaultPeriods();
+          data.periods.forEach((p, idx) => {
+            state.periods[idx].label = p.label || state.periods[idx].label;
+            state.periods[idx].fileName = p.fileName || "";
+            if (Array.isArray(p.gridRaw) && p.gridRaw.length === totalCells()) {
+              state.periods[idx].grid = p.gridRaw;
+            }
+          });
+        }
+        syncInputsFromState();
+        buildGridDOM();
+        switchPeriod(0);
+        saveProgress();
+        alert("JSON 标注数据导入成功！");
+      } catch (err) {
+        alert("JSON 格式解析失败：" + err.message);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  function exportJSON() {
+    const total = totalCells();
+    const haPerCell = state.totalAreaHa / total;
+    const payload = {
+      meta: {
+        gridDimension: `${state.cols}x${state.rows}`,
+        cols: state.cols,
+        rows: state.rows,
+        periodCount: state.periodCount,
+        exportedAt: new Date().toISOString()
+      },
+      config: {
+        totalAreaHa: state.totalAreaHa,
+        haPerCell: Number(haPerCell.toFixed(4)),
+        eaValue: state.eaValue
+      },
+      classDefinitions: CLASSES.filter(c => c.id !== 0).map(({ id, name, eq }) => ({ id, name, eq })),
+      periods: state.periods.map(p => {
+        const cells = {};
+        const counts = {};
+        CLASSES.filter(c => c.id !== 0).forEach(c => counts[c.name] = 0);
+        let esvYuan = 0;
+
+        p.grid.forEach((val, idx) => {
+          const r = Math.floor(idx / state.cols);
+          const c = idx % state.cols;
+          const cellId = `${getColLabel(c)}${r + 1}`;
+          const cls = CLASSES.find(x => x.id === val);
+          cells[cellId] = val;
+          if (cls && val !== 0) {
+            counts[cls.name]++;
+            esvYuan += haPerCell * cls.eq * state.eaValue;
+          }
+        });
+
+        return {
+          label: p.label,
+          fileName: p.fileName,
+          imageResolution: p.width && p.height ? `${p.width}x${p.height}` : "unknown",
+          counts,
+          estimatedESV_WanYuan: Number((esvYuan / 10000).toFixed(2)),
+          cellsById: cells,
+          gridRaw: p.grid
+        };
+      })
+    };
+
+    downloadFile(
+      JSON.stringify(payload, null, 2),
+      `ground_truth_${state.cols}x${state.rows}_${new Date().toISOString().slice(0, 10)}.json`,
+      "application/json"
+    );
+  }
+
+  function exportCSV() {
+    const total = totalCells();
+    const haPerCell = state.totalAreaHa / total;
+    const lines = ["\uFEFF=== 汇总统计表 ==="];
+    const headerNames = CLASSES.filter(c => c.id !== 0).map(c => `${c.name}(格)`).join(",");
+    lines.push(`时期,文件名,已标注格数,${headerNames},估算ESV(万元/年)`);
+
+    state.periods.forEach(p => {
+      const counts = CLASSES.filter(c => c.id !== 0).map(c => p.grid.filter(v => v === c.id).length);
+      const labeled = counts.reduce((a, b) => a + b, 0);
+      let esv = 0;
+      CLASSES.filter(c => c.id !== 0).forEach((c, i) => {
+        esv += counts[i] * haPerCell * c.eq * state.eaValue;
+      });
+      lines.push(`${p.label},${p.fileName || "未命名"},${labeled},${counts.join(",")},${(esv / 10000).toFixed(2)}`);
+    });
+
+    lines.push("");
+    lines.push("=== 逐格真值明细表 ===");
+    lines.push(`网格编号,行(1-${state.rows}),列(A-${getColLabel(state.cols - 1)}),` + state.periods.map(p => p.label).join(","));
+
+    for (let r = 0; r < state.rows; r++) {
+      for (let c = 0; c < state.cols; c++) {
+        const idx = r * state.cols + c;
+        const cellId = `${getColLabel(c)}${r + 1}`;
+        const vals = state.periods.map(p => {
+          const cls = CLASSES.find(x => x.id === p.grid[idx]);
+          return cls && p.grid[idx] !== 0 ? cls.name : "未标注";
+        });
+        lines.push(`${cellId},${r + 1},${getColLabel(c)},${vals.join(",")}`);
+      }
+    }
+
+    downloadFile(
+      lines.join("\n"),
+      `ground_truth_${state.cols}x${state.rows}_${new Date().toISOString().slice(0, 10)}.csv`,
+      "text/csv;charset=utf-8"
+    );
+  }
+
+  function downloadFile(content, filename, mime) {
+    const blob = new Blob([content], { type: mime });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // 事件绑定
+  document.getElementById("gridOverlay").addEventListener("contextmenu", e => e.preventDefault());
+  window.addEventListener("mouseup", () => { isDrawing = false; });
+  window.addEventListener("resize", fitStageSize);
+
+  document.getElementById("periodLabelInput").addEventListener("input", (e) => {
+    state.periods[state.activePeriod].label = e.target.value || `时期 T${state.activePeriod + 1}`;
+    renderTabs();
+    updateStats();
+    saveProgress();
+  });
+
+  document.getElementById("opacitySlider").addEventListener("input", (e) => {
+    state.opacity = e.target.value / 100;
+    document.getElementById("opacityVal").textContent = `${e.target.value}%`;
+    refreshAllCellsVisual();
+  });
+
+  document.getElementById("toggleLabels").addEventListener("change", (e) => {
+    document.getElementById("gridOverlay").classList.toggle("hide-labels", !e.target.checked);
+  });
+
+  document.getElementById("toggleGridlines").addEventListener("change", (e) => {
+    document.getElementById("gridOverlay").classList.toggle("hide-gridlines", !e.target.checked);
+  });
+
+  document.getElementById("totalAreaInput").addEventListener("change", (e) => {
+    state.totalAreaHa = Math.max(0.1, Number(e.target.value) || 249.1);
+    updateStats();
+    saveProgress();
+  });
+
+  document.getElementById("eaInput").addEventListener("change", (e) => {
+    state.eaValue = Math.max(1, Number(e.target.value) || 2500);
+    updateStats();
+    saveProgress();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT") return;
+    if (e.key >= "0" && e.key <= "6") {
+      state.activeBrush = Number(e.key);
+      renderBrushes();
+    } else if (e.key === "ArrowRight") {
+      switchPeriod((state.activePeriod + 1) % state.periodCount);
+    } else if (e.key === "ArrowLeft") {
+      switchPeriod((state.activePeriod + state.periodCount - 1) % state.periodCount);
+    }
+  });
+
+  // 初始化
+  loadSavedProgress();
+  syncInputsFromState();
+  renderBrushes();
+  buildGridDOM();
+  switchPeriod(0);
+</script>
+</body>
+</html>
